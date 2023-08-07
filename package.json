@@ -1,0 +1,25 @@
+{
+  "name": "rosie-speech-vxlab",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "./run.sh",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RMIT-Centre-for-Digital-Innovation/rosie-speech-vxlab.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/RMIT-Centre-for-Digital-Innovation/rosie-speech-vxlab/issues"
+  },
+  "homepage": "https://github.com/RMIT-Centre-for-Digital-Innovation/rosie-speech-vxlab#readme",
+  "dependencies": {
+    "roslib": "^1.3.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.13.0"
+  }
+}

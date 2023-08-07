@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+
+<link rel="stylesheet" type="text/css" href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" />
+
+<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.8.0/jquery.min.js"></script>
+<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.23/jquery-ui.min.js"></script>
+
+<!-- script type="text/javascript" src="http://cdn.robotwebtools.org/EventEmitter2/current/eventemitter2.min.js"></script> -->
+
+<script type="text/javascript" src="eventemitter2.min.js"></script>
+
+<!-- type="text/javascript" src="http://cdn.robotwebtools.org/roslibjs/current/roslib.min.js"></script> -->
+
+<script type="text/javascript" src="roslib.min.js"></script>
+
+
+<script type="text/javascript" src="http://cdn.robotwebtools.org/keyboardteleopjs/current/keyboardteleop.min.js"></script>
+
+<script>
+/**
+ * @author Russell Toris - rctoris@wpi.edu
+ * @author Ian Peake - ian.peake@rmit.edu.au
+ */
+
+/**
+ * Manages connection to the server and all interactions with ROS.
+ *
+ * Emits the following events:
+ *   * 'change' - emitted with a change in speed occurs
+ *
+ * @constructor
+ * @param options - possible keys include:
+ *   * ros - the ROSLIB.Ros connection handle
+ *   * topic (optional) - the Twist topic to publish to, like '/cmd_vel'
+ *   * throttle (optional) - a constant throttle for the speed
+ */
+VX = {}
+
+VX.kbd = function(options) {
+  var that = this;
+  console.log("that=",that);
+  options = options || {};
+  var ros = options.ros;
+  var topic = options.topic || '/cmd_vel';
+  // permanent throttle
+  var throttle = options.throttle || 1.0;
+
+  // used to externally throttle the speed (e.g., from a slider)
+  this.scale = 1.0;
+
+  // linear x and y movement and angular z movement
+  var x = 0;
+  var y = 0;
+  var z = 0;
+
+  var cmdVel = new ROSLIB.Topic({
+    ros : ros,
+    name : topic,
+    messageType : 'geometry_msgs/Twist'
+  });
+
+  var mode_l = new ROSLIB.Topic({
+    ros : ros,
+    name : '/mobility_base/mode',
+    messageType : 'mobility_base_core_msgs/Mode'
+  });
+
+  var update_status_mode = function(message) {
+    console.log('mode: ' + JSON.stringify(message.mode) + " " + new Date().getTime());
+    var msg = "unknown/off";
+    if (message.mode === 0) { msg = "E-Stop"; }
+    if (message.mode === 1) { msg = "Disabled (Enable at remote control)"; }
+    if (message.mode === 4) { msg = "Limp home"; }
+    if (message.mode === 5) { msg = "Battery critical"; }
+    if (message.mode === 7) { msg = "Motor fault"; }
+    if (message.mode === 8) { msg = "Under wireless control"; }
+    if (message.mode === 16) { msg = "Timeout (Ready for software move)"; }
+    if (message.mode === 17) { msg = "Velocity (Moving)"; }
+    if (message.mode === 18) { msg = "Velocity raw"; }
+    document.getElementById("baseMode").innerHTML = msg + ", code = " + message.mode + ", timestamp " + new Date().getTime();
+  };
+
+  mode_l.subscribe(function(message) {
+    update_status_mode(message);
+  });
+
+  that.twist = new ROSLIB.Message({
+    angular : {
+      x : 0,
+      y : 0,
+      z : 0
+    },
+    linear : {
+      x : 0,
+      y : 0,
+      z : 0
+    }
+  });
+
+  var brakeFn = function() {
+          console.log('brake');
+	  that.pub = false;	
+	  that.twist = new ROSLIB.Message({
+	    angular : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    },
+	    linear : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    }
+	  });
+          cmdVel.publish(that.twist);
+  }
+  this.brakeFn = brakeFn;
+
+  // every 10th of a second...
+  setInterval(function() {
+      var msg = that.twist;
+      if (that.pub) {
+        console.log("Publish",msg);
+        cmdVel.publish(msg);
+        if (that.brake) {
+          console.log("...and braking");
+	  msg = new ROSLIB.Message({
+	    angular : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    },
+	    linear : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    }
+	  });
+          cmdVel.publish(msg);
+	  that.pub = false;
+	  that.brake = false;
+	}
+      }
+  }, 200);
+
+  this.touchHandler = function(event, startend) {
+    console.log("touchHandler",that.touching,startend,event);
+    if (event.targetTouches.length == 1 && startend=='start') {
+      console.log("Single button", event.target.id);
+      var x = 0;
+      var y = 0;
+      var z = 0;
+      var oldX = x;
+      var oldY = y;
+      var oldZ = z;
+      validKey = true;
+      speed = throttle * that.scale;
+
+      switch (event.target.id) {
+	case 'buttona':
+	  // turn left
+	  z = 1 * speed;
+	  break;
+	case 'buttonw':
+	  // up
+	  x = 0.5 * speed;
+	  break;
+	case 'buttond':
+	  // turn right
+	  z = -1 * speed;
+	  break;
+	case 'buttons':
+	  // down
+	  x = -0.5 * speed;
+	  break;
+	case 'buttone':
+	  // strafe right
+	  y = -0.5 * speed;
+	  break;
+	case 'buttonq':
+	  // strafe left
+	  y = 0.5 * speed;
+	  break;
+	default:
+	  validKey = false;
+      }
+
+      if (validKey) {
+	// check which key was pressed
+	that.pub = true;
+	that.twist = new ROSLIB.Message({
+	  angular : {
+	    x : 0,
+	    y : 0,
+	    z : z
+	  },
+	  linear : {
+	    x : x,
+	    y : y,
+	    z : z
+	  }
+	});
+        console.log("Twist",that.twist);
+        // check for changes
+        if (oldX !== x || oldY !== y || oldZ !== z) {
+          that.emit('change', that.twist);
+        }
+      }
+
+    }
+  }
+
+  this.touchStart = function(event) {
+    console.log("touchStart");
+    if (event.target.id==="touchbuttons") { return; }
+    //if (that.touching===undefined) {
+    //  that.touching = {};
+    //}
+    //that.touching[event.target.id]='1';
+    that.touchHandler(event,'start');
+  }
+
+  this.touchEnd = function(event) {
+    console.log("touchEnd");
+    // for now, accept single-key only: "fail safe" --- any touch-end event will ``brake''
+    that.brakeFn();
+    //if (event.target.id==="touchbuttons") { return; }
+    //if (that.touching===undefined) {
+    //  that.touching = {};
+    //}
+    //that.touching[event.target.id]='0';
+    //that.touchHandler(event,'end');
+  }
+
+  // sets up a key listener on the page used for keyboard teleoperation
+  this.handleKey = function(keyCode, keyDown) {
+    //console.log("handleKey",keyCode,keyDown);
+    // used to check for changes in speed
+    var oldX = x;
+    var oldY = y;
+    var oldZ = z;
+    
+    var speed = 0;
+    var validKey = true;
+    // throttle the speed by the slider and throttle constant
+    if (keyDown === true) {
+      speed = throttle * that.scale;
+    } else {
+      console.log("Key up, stopping");
+      that.brake = true;
+    }
+    // check which key was pressed
+    switch (keyCode) {
+      case 65:
+      case 37:
+        // turn left
+        z = 1 * speed;
+        break;
+      case 87:
+      case 38:
+        // up
+        x = 0.5 * speed;
+        break;
+      case 68:
+      case 39:
+        // turn right
+        z = -1 * speed;
+        break;
+      case 83:
+      case 40:
+        // down
+        x = -0.5 * speed;
+        break;
+      case 69:
+        // strafe right
+        y = -0.5 * speed;
+        break;
+      case 81:
+        // strafe left
+        y = 0.5 * speed;
+        break;
+      default:
+        validKey = false;
+    }
+
+    // publish the command
+    if (validKey) {
+      that.pub = true;
+      that.twist = new ROSLIB.Message({
+        angular : {
+          x : 0,
+          y : 0,
+          z : z
+        },
+        linear : {
+          x : x,
+          y : y,
+          z : z
+        }
+      });
+      console.log("Twist",that.twist);
+
+      // check for changes
+      if (oldX !== x || oldY !== y || oldZ !== z) {
+        that.emit('change', that.twist);
+      }
+    }
+  };
+
+  // handle the key
+  var body = document.getElementsByTagName('body')[0];
+  body.addEventListener('keydown', function(e) {
+    that.handleKey(e.keyCode, true);
+  }, false);
+  body.addEventListener('keyup', function(e) {
+    that.handleKey(e.keyCode, false);
+  }, false);
+
+// Setup canvas and expose context via ctx variable
+// canvas.addEventListener('touchmove', function(event) {
+//  for (var i = 0; i < event.touches.length; i++) {
+//    var touch = event.touches[i];
+//    ctx.beginPath();
+//    ctx.arc(touch.pageX, touch.pageY, 20, 0, 2*Math.PI, true);
+//    ctx.fill();
+//    ctx.stroke();
+//  }
+//}, false)
+
+  //var touchbutton = document.getElementById('buttonq');
+  var touchbutton = document.getElementById('touchbuttons');
+  touchbutton.addEventListener('touchstart', that.touchStart);
+  touchbutton.addEventListener('touchend', that.touchEnd);
+  touchbutton.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+    }, false);
+};
+VX.kbd.prototype.__proto__ = EventEmitter2.prototype;
+</script>
+
+<script type="text/javascript">
+  /**
+   * Setup all GUI elements when the page is loaded.
+   */
+
+  // for crc launch
+  ////var ros_master_uri = 'ws://mb.vx.rmit.edu.au:9090';
+  var ros_master_uri = 'ws://hs.vx.rmit.edu.au:9000';
+  //var ros_master_uri = 'ws://redsim_a.weave.local:9090';
+
+  var ros;
+
+  function init() {
+    // Connecting to ROS.
+    ros = new ROSLIB.Ros({
+      //url : 'ws://mb.vx.rmit.edu.au:9090'
+      url : ros_master_uri
+    });
+
+    ros.on('connection', function() {
+      console.log('Connected to websocket server.');
+    });
+
+    ros.on('error', function(error) {
+      console.log('Error connecting to websocket server: ', error);
+    });
+
+    ros.on('close', function() {
+      console.log('Connection to websocket server closed.');
+    });
+
+    let updateTorsoStatus = function(status){
+      console.log('Torso status', status);
+      var power = status.ready;
+      var statusStr = JSON.stringify(status);
+      if (power === null || power === undefined) {
+	statusStr = "<font color='red'>Check that Baxter torso is switched on</font>";
+      }
+      document.getElementById("torsoStatus").innerHTML = statusStr;
+    }
+
+    // every 10th of a second...
+    setInterval(function() {
+      // Try to get status of Torso (through web shim)
+      let url = 'http://10.42.1.254:9000/gandalf.status';
+      fetch(url)
+      .then(res => res.json())
+      .then((out) => {
+	//console.log('Checkout this JSON! ', out);
+	updateTorsoStatus(out);
+      })
+      .catch(err => {
+	updateTorsoStatus({error: err});
+      });
+    }, 5000);
+
+    // Initialize the teleop.
+    var teleop = new VX.kbd({
+      ros : ros,
+      //topic : '/mobility_base/cmd_vel'
+      topic : '/safebase/cmd_vel'
+    });
+
+    // Create a UI slider using JQuery UI.
+    $('#speed-slider').slider({
+      range : 'min',
+      min : 0,
+      max : 100,
+      value : 90,
+      slide : function(event, ui) {
+        // Change the speed label.
+        $('#speed-label').html('Speed: ' + ui.value + '%');
+        // Scale the speed.
+        teleop.scale = (ui.value / 100.0);
+      }
+    });
+
+    // Set the initial speed .
+    $('#speed-label').html('Speed: ' + ($('#speed-slider').slider('value')) + '%');
+    teleop.scale = ($('#speed-slider').slider('value') / 100.0);
+  }
+</script>
+
+</head>
+
+<body onload="init()">
+  <title>VXLab Baxter controller v0.0.4</title>
+  <p><em><b>You must be an inducted Baxter user to use this page</b></em> --- refer to mobile Baxter safe work instruction as a condition of use
+  <p>Operator checklist:
+  <ul>
+  <li>disconnect charger
+  <li>warn people nearby - no loose clothing or jewellery
+  <li>maintain sight of robot and avoid collisions
+  <li>hold remote control at all times
+  <li>emergency stop on back left of Baxter torso.
+  </ul>
+
+  <b>Mobility base</b>
+
+  <p>Switch on the remote control. Set left stick to "enable". Set switch on top left to "computer". Ensure charging cord is not connected! Touch is under investigation.
+
+
+  <table>
+  <tr><td>Mode:</td><td><div id="baseMode"></div></td><td></td></tr>
+  </table>
+
+  <div id="touchbuttons">
+  <table width="100%">
+  <tr>
+  <td><img width="100%" id="buttonq" src="q.jpg"></td>
+  <td><img width="100%" id="buttonw" src="w.jpg"></td>
+  <td><img width="100%" id="buttone" src="e.jpg"></td>
+  </tr>
+  </div>
+  <tr>
+  <td><img width="100%" id="buttona" src="a.jpg"></td>
+  <td><img width="100%" id="buttons" src="s.jpg"></td>
+  <td><img width="100%" id="buttond" src="d.jpg"></td>
+  </tr>
+  </table>
+  </div>
+
+  <div id="speed-label"></div>
+  <div id="speed-slider"></div>
+
+  <p><b>Torso:</b>
+  <div id="torsoStatus"></div>
+  <table>
+  <tr>
+  <td><a href="http://10.42.1.254:9000/baxter.motors.on"><img alt="Enable" width="100%" src="BaxterPowerOn.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.motors.off"><img alt="Disable" width="100%" src="BaxterDisable.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/gandalf.record"><img alt="Record" width="100%" src="BaxterRecord.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/gandalf.play"><img alt="Play back" width="100%" src="BaxterPlayback.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.enable_untuck"><img alt="Enable" width="100%" src="BaxterPowerOn.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.tuck_disable"><img alt="Disable" width="100%" src="BaxterDisable.png"></a></td>
+  </tr>
+  <tr>
+  <td>Motors on</td>
+  <td>Motors off</td>
+  <td>Record</td>
+  <td>Play</td>
+  <td>Untuck</td>
+  <td>Tuck</td>
+  </tr>
+  </table>
+  <p>
+      <div class="compact marquee">
+        <div id="info">
+          <p id="info_start">
+            Click on the microphone icon and begin speaking for as long as you like.
+          </p>
+          <p id="info_speak_now" style="display:none">
+            Speak now.
+          </p>
+          <p id="info_no_speech" style="display:none">
+            No speech was detected. You may need to adjust your <a href=
+            "//support.google.com/chrome/bin/answer.py?hl=en&amp;answer=1407892">microphone
+            settings</a>.
+          </p>
+          <p id="info_no_microphone" style="display:none">
+            No microphone was found. Ensure that a microphone is installed and that
+            <a href="//support.google.com/chrome/bin/answer.py?hl=en&amp;answer=1407892">
+            microphone settings</a> are configured correctly.
+          </p>
+          <p id="info_allow" style="display:none">
+            Click the "Allow" button above to enable your microphone.
+          </p>
+          <p id="info_denied" style="display:none">
+            Permission to use microphone was denied.
+          </p>
+          <p id="info_blocked" style="display:none">
+            Permission to use microphone is blocked. To change, go to
+            chrome://settings/contentExceptions#media-stream
+          </p>
+          <p id="info_upgrade" style="display:none">
+            Web Speech API is not supported by this browser. Upgrade to <a href=
+            "//www.google.com/chrome">Chrome</a> version 25 or later.
+          </p>
+        </div>
+        <div id="div_start">
+          <button id="start_button" onclick="startButton(event)"><img alt="Start/Stop" id="start_img"
+          src="/intl/en/chrome/assets/common/images/content/mic.gif"></button>
+        </div>
+        <div id="results">
+          <span class="final" id="final_span"></span> <span class="interim" id=
+          "interim_span"></span>
+        </div>
+        <div class="compact marquee" id="div_language">
+          <select id="select_language" onchange="updateCountry()">
+            </select>&nbsp;&nbsp; <select id="select_dialect">
+            </select>
+        </div>
+      </div>
+    </div>
+
+<script>
+console.log("Script started v2");
+// If you modify this array, also update default language / dialect below.
+var langs =
+[['Afrikaans',       ['af-ZA']],
+ ['አማርኛ',           ['am-ET']],
+ ['Azərbaycanca',    ['az-AZ']],
+ ['বাংলা',            ['bn-BD', 'বাংলাদেশ'],
+                     ['bn-IN', 'ভারত']],
+ ['Bahasa Indonesia',['id-ID']],
+ ['Bahasa Melayu',   ['ms-MY']],
+ ['Català',          ['ca-ES']],
+ ['Čeština',         ['cs-CZ']],
+ ['Dansk',           ['da-DK']],
+ ['Deutsch',         ['de-DE']],
+ ['English',         ['en-AU', 'Australia'],
+                     ['en-CA', 'Canada'],
+                     ['en-IN', 'India'],
+                     ['en-KE', 'Kenya'],
+                     ['en-TZ', 'Tanzania'],
+                     ['en-GH', 'Ghana'],
+                     ['en-NZ', 'New Zealand'],
+                     ['en-NG', 'Nigeria'],
+                     ['en-ZA', 'South Africa'],
+                     ['en-PH', 'Philippines'],
+                     ['en-GB', 'United Kingdom'],
+                     ['en-US', 'United States']],
+ ['Español',         ['es-AR', 'Argentina'],
+                     ['es-BO', 'Bolivia'],
+                     ['es-CL', 'Chile'],
+                     ['es-CO', 'Colombia'],
+                     ['es-CR', 'Costa Rica'],
+                     ['es-EC', 'Ecuador'],
+                     ['es-SV', 'El Salvador'],
+                     ['es-ES', 'España'],
+                     ['es-US', 'Estados Unidos'],
+                     ['es-GT', 'Guatemala'],
+                     ['es-HN', 'Honduras'],
+                     ['es-MX', 'México'],
+                     ['es-NI', 'Nicaragua'],
+                     ['es-PA', 'Panamá'],
+                     ['es-PY', 'Paraguay'],
+                     ['es-PE', 'Perú'],
+                     ['es-PR', 'Puerto Rico'],
+                     ['es-DO', 'República Dominicana'],
+                     ['es-UY', 'Uruguay'],
+                     ['es-VE', 'Venezuela']],
+ ['Euskara',         ['eu-ES']],
+ ['Filipino',        ['fil-PH']],
+ ['Français',        ['fr-FR']],
+ ['Basa Jawa',       ['jv-ID']],
+ ['Galego',          ['gl-ES']],
+ ['ગુજરાતી',           ['gu-IN']],
+ ['Hrvatski',        ['hr-HR']],
+ ['IsiZulu',         ['zu-ZA']],
+ ['Íslenska',        ['is-IS']],
+ ['Italiano',        ['it-IT', 'Italia'],
+                     ['it-CH', 'Svizzera']],
+ ['ಕನ್ನಡ',             ['kn-IN']],
+ ['ភាសាខ្មែរ',          ['km-KH']],
+ ['Latviešu',        ['lv-LV']],
+ ['Lietuvių',        ['lt-LT']],
+ ['മലയാളം',          ['ml-IN']],
+ ['मराठी',             ['mr-IN']],
+ ['Magyar',          ['hu-HU']],
+ ['ລາວ',              ['lo-LA']],
+ ['Nederlands',      ['nl-NL']],
+ ['नेपाली भाषा',        ['ne-NP']],
+ ['Norsk bokmål',    ['nb-NO']],
+ ['Polski',          ['pl-PL']],
+ ['Português',       ['pt-BR', 'Brasil'],
+                     ['pt-PT', 'Portugal']],
+ ['Română',          ['ro-RO']],
+ ['සිංහල',          ['si-LK']],
+ ['Slovenščina',     ['sl-SI']],
+ ['Basa Sunda',      ['su-ID']],
+ ['Slovenčina',      ['sk-SK']],
+ ['Suomi',           ['fi-FI']],
+ ['Svenska',         ['sv-SE']],
+ ['Kiswahili',       ['sw-TZ', 'Tanzania'],
+                     ['sw-KE', 'Kenya']],
+ ['ქართული',       ['ka-GE']],
+ ['Հայերեն',          ['hy-AM']],
+ ['தமிழ்',            ['ta-IN', 'இந்தியா'],
+                     ['ta-SG', 'சிங்கப்பூர்'],
+                     ['ta-LK', 'இலங்கை'],
+                     ['ta-MY', 'மலேசியா']],
+ ['తెలుగు',           ['te-IN']],
+ ['Tiếng Việt',      ['vi-VN']],
+ ['Türkçe',          ['tr-TR']],
+ ['اُردُو',            ['ur-PK', 'پاکستان'],
+                     ['ur-IN', 'بھارت']],
+ ['Ελληνικά',         ['el-GR']],
+ ['български',         ['bg-BG']],
+ ['Pусский',          ['ru-RU']],
+ ['Српски',           ['sr-RS']],
+ ['Українська',        ['uk-UA']],
+ ['한국어',            ['ko-KR']],
+ ['中文',             ['cmn-Hans-CN', '普通话 (中国大陆)'],
+                     ['cmn-Hans-HK', '普通话 (香港)'],
+                     ['cmn-Hant-TW', '中文 (台灣)'],
+                     ['yue-Hant-HK', '粵語 (香港)']],
+ ['日本語',           ['ja-JP']],
+ ['हिन्दी',             ['hi-IN']],
+ ['ภาษาไทย',         ['th-TH']]];
+
+for (var i = 0; i < langs.length; i++) {
+  select_language.options[i] = new Option(langs[i][0], i);
+}
+// Set default language / dialect.
+select_language.selectedIndex = 10;
+updateCountry();
+select_dialect.selectedIndex = 11;
+showInfo('info_start');
+console.log("Script info_start");
+
+function updateCountry() {
+  for (var i = select_dialect.options.length - 1; i >= 0; i--) {
+    select_dialect.remove(i);
+  }
+  var list = langs[select_language.selectedIndex];
+  for (var i = 1; i < list.length; i++) {
+    select_dialect.options.add(new Option(list[i][1], list[i][0]));
+  }
+  select_dialect.style.visibility = list[1].length == 1 ? 'hidden' : 'visible';
+}
+
+var create_email = false;
+var final_transcript = '';
+var recognizing = false;
+var ignore_onend;
+var start_timestamp;
+console.log("check for speech recognition capability");
+if (!('webkitSpeechRecognition' in window)) {
+  upgrade();
+} else {
+  start_button.style.display = 'inline-block';
+  var recognition = new webkitSpeechRecognition();
+  console.log("recognition:",recognition);
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onstart = function() {
+    console.log("speak now...");
+    recognizing = true;
+    showInfo('info_speak_now');
+    //start_img.src = '/intl/en/chrome/assets/common/images/content/mic-animate.gif';
+  };
+
+  recognition.onerror = function(event) {
+    console.log("Error",event);
+    if (event.error == 'no-speech') {
+      start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+      showInfo('info_no_speech');
+      ignore_onend = true;
+    }
+    if (event.error == 'audio-capture') {
+      start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+      showInfo('info_no_microphone');
+      ignore_onend = true;
+    }
+    if (event.error == 'not-allowed') {
+      if (event.timeStamp - start_timestamp < 100) {
+        showInfo('info_blocked');
+      } else {
+        showInfo('info_denied');
+      }
+      ignore_onend = true;
+    }
+  };
+
+  recognition.onend = function() {
+    recognizing = false;
+    if (ignore_onend) {
+      return;
+    }
+    start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+    if (!final_transcript) {
+      showInfo('info_start');
+      return;
+    }
+    showInfo('');
+    if (window.getSelection) {
+      window.getSelection().removeAllRanges();
+      var range = document.createRange();
+      range.selectNode(document.getElementById('final_span'));
+      window.getSelection().addRange(range);
+    }
+    if (create_email) {
+      create_email = false;
+      createEmail();
+    }
+  };
+
+  var speechtopic = new ROSLIB.Topic({
+    ros : ros,
+    name : '/red/speech_test',
+    messageType : 'std_msgs/String'
+  });
+
+  recognition.onresult = function(event) {
+    var interim_transcript = '';
+    if (typeof(event.results) == 'undefined') {
+      recognition.onend = null;
+      recognition.stop();
+      upgrade();
+      return;
+    }
+    for (var i = event.resultIndex; i < event.results.length; ++i) {
+      if (event.results[i].isFinal) {
+        final_transcript += event.results[i][0].transcript;
+	console.log("Final transcript:",final_transcript);
+	speechtopic.pub(final_transcript);
+      } else {
+        interim_transcript += event.results[i][0].transcript;
+      }
+    }
+    final_transcript = capitalize(final_transcript);
+    final_span.innerHTML = linebreak(final_transcript);
+    interim_span.innerHTML = linebreak(interim_transcript);
+    if (final_transcript || interim_transcript) {
+      showButtons('inline-block');
+    }
+  };
+}
+
+function upgrade() {
+  start_button.style.visibility = 'hidden';
+  showInfo('info_upgrade');
+}
+
+var two_line = /\n\n/g;
+var one_line = /\n/g;
+function linebreak(s) {
+  return s.replace(two_line, '<p></p>').replace(one_line, '<br>');
+}
+
+var first_char = /\S/;
+function capitalize(s) {
+  return s.replace(first_char, function(m) { return m.toUpperCase(); });
+}
+
+function startButton(event) {
+  if (recognizing) {
+    recognition.stop();
+    return;
+  }
+  final_transcript = '';
+  recognition.lang = select_dialect.value;
+  recognition.start();
+  ignore_onend = false;
+  final_span.innerHTML = '';
+  interim_span.innerHTML = '';
+  start_img.src = '/intl/en/chrome/assets/common/images/content/mic-slash.gif';
+  showInfo('info_allow');
+  showButtons('none');
+  start_timestamp = event.timeStamp;
+}
+
+function showInfo(s) {
+  if (s) {
+    for (var child = info.firstChild; child; child = child.nextSibling) {
+      if (child.style) {
+        child.style.display = child.id == s ? 'inline' : 'none';
+      }
+    }
+    info.style.visibility = 'visible';
+  } else {
+    info.style.visibility = 'hidden';
+  }
+}
+
+var current_style;
+function showButtons(style) {
+  if (style == current_style) {
+    return;
+  }
+  current_style = style;
+  copy_button.style.display = style;
+  email_button.style.display = style;
+  copy_info.style.display = 'none';
+  email_info.style.display = 'none';
+}
+
+console.log("start button...");
+document.getElementById ("start_button").addEventListener ("click", startButton, false);
+console.log("start button");
+</script>
+
+
+  </body>
+<script>
+console.log("Script started");
+// If you modify this array, also update default language / dialect below.
+var langs =
+[['Afrikaans',       ['af-ZA']],
+ ['አማርኛ',           ['am-ET']],
+ ['Azərbaycanca',    ['az-AZ']],
+ ['বাংলা',            ['bn-BD', 'বাংলাদেশ'],
+                     ['bn-IN', 'ভারত']],
+ ['Bahasa Indonesia',['id-ID']],
+ ['Bahasa Melayu',   ['ms-MY']],
+ ['Català',          ['ca-ES']],
+ ['Čeština',         ['cs-CZ']],
+ ['Dansk',           ['da-DK']],
+ ['Deutsch',         ['de-DE']],
+ ['English',         ['en-AU', 'Australia'],
+                     ['en-CA', 'Canada'],
+                     ['en-IN', 'India'],
+                     ['en-KE', 'Kenya'],
+                     ['en-TZ', 'Tanzania'],
+                     ['en-GH', 'Ghana'],
+                     ['en-NZ', 'New Zealand'],
+                     ['en-NG', 'Nigeria'],
+                     ['en-ZA', 'South Africa'],
+                     ['en-PH', 'Philippines'],
+                     ['en-GB', 'United Kingdom'],
+                     ['en-US', 'United States']],
+ ['Español',         ['es-AR', 'Argentina'],
+                     ['es-BO', 'Bolivia'],
+                     ['es-CL', 'Chile'],
+                     ['es-CO', 'Colombia'],
+                     ['es-CR', 'Costa Rica'],
+                     ['es-EC', 'Ecuador'],
+                     ['es-SV', 'El Salvador'],
+                     ['es-ES', 'España'],
+                     ['es-US', 'Estados Unidos'],
+                     ['es-GT', 'Guatemala'],
+                     ['es-HN', 'Honduras'],
+                     ['es-MX', 'México'],
+                     ['es-NI', 'Nicaragua'],
+                     ['es-PA', 'Panamá'],
+                     ['es-PY', 'Paraguay'],
+                     ['es-PE', 'Perú'],
+                     ['es-PR', 'Puerto Rico'],
+                     ['es-DO', 'República Dominicana'],
+                     ['es-UY', 'Uruguay'],
+                     ['es-VE', 'Venezuela']],
+ ['Euskara',         ['eu-ES']],
+ ['Filipino',        ['fil-PH']],
+ ['Français',        ['fr-FR']],
+ ['Basa Jawa',       ['jv-ID']],
+ ['Galego',          ['gl-ES']],
+ ['ગુજરાતી',           ['gu-IN']],
+ ['Hrvatski',        ['hr-HR']],
+ ['IsiZulu',         ['zu-ZA']],
+ ['Íslenska',        ['is-IS']],
+ ['Italiano',        ['it-IT', 'Italia'],
+                     ['it-CH', 'Svizzera']],
+ ['ಕನ್ನಡ',             ['kn-IN']],
+ ['ភាសាខ្មែរ',          ['km-KH']],
+ ['Latviešu',        ['lv-LV']],
+ ['Lietuvių',        ['lt-LT']],
+ ['മലയാളം',          ['ml-IN']],
+ ['मराठी',             ['mr-IN']],
+ ['Magyar',          ['hu-HU']],
+ ['ລາວ',              ['lo-LA']],
+ ['Nederlands',      ['nl-NL']],
+ ['नेपाली भाषा',        ['ne-NP']],
+ ['Norsk bokmål',    ['nb-NO']],
+ ['Polski',          ['pl-PL']],
+ ['Português',       ['pt-BR', 'Brasil'],
+                     ['pt-PT', 'Portugal']],
+ ['Română',          ['ro-RO']],
+ ['සිංහල',          ['si-LK']],
+ ['Slovenščina',     ['sl-SI']],
+ ['Basa Sunda',      ['su-ID']],
+ ['Slovenčina',      ['sk-SK']],
+ ['Suomi',           ['fi-FI']],
+ ['Svenska',         ['sv-SE']],
+ ['Kiswahili',       ['sw-TZ', 'Tanzania'],
+                     ['sw-KE', 'Kenya']],
+ ['ქართული',       ['ka-GE']],
+ ['Հայերեն',          ['hy-AM']],
+ ['தமிழ்',            ['ta-IN', 'இந்தியா'],
+                     ['ta-SG', 'சிங்கப்பூர்'],
+                     ['ta-LK', 'இலங்கை'],
+                     ['ta-MY', 'மலேசியா']],
+ ['తెలుగు',           ['te-IN']],
+ ['Tiếng Việt',      ['vi-VN']],
+ ['Türkçe',          ['tr-TR']],
+ ['اُردُو',            ['ur-PK', 'پاکستان'],
+                     ['ur-IN', 'بھارت']],
+ ['Ελληνικά',         ['el-GR']],
+ ['български',         ['bg-BG']],
+ ['Pусский',          ['ru-RU']],
+ ['Српски',           ['sr-RS']],
+ ['Українська',        ['uk-UA']],
+ ['한국어',            ['ko-KR']],
+ ['中文',             ['cmn-Hans-CN', '普通话 (中国大陆)'],
+                     ['cmn-Hans-HK', '普通话 (香港)'],
+                     ['cmn-Hant-TW', '中文 (台灣)'],
+                     ['yue-Hant-HK', '粵語 (香港)']],
+ ['日本語',           ['ja-JP']],
+ ['हिन्दी',             ['hi-IN']],
+ ['ภาษาไทย',         ['th-TH']]];
+
+for (var i = 0; i < langs.length; i++) {
+  select_language.options[i] = new Option(langs[i][0], i);
+}
+// Set default language / dialect.
+select_language.selectedIndex = 10;
+updateCountry();
+select_dialect.selectedIndex = 11;
+showInfo('info_start');
+console.log("Script info_start");
+
+function updateCountry() {
+  for (var i = select_dialect.options.length - 1; i >= 0; i--) {
+    select_dialect.remove(i);
+  }
+  var list = langs[select_language.selectedIndex];
+  for (var i = 1; i < list.length; i++) {
+    select_dialect.options.add(new Option(list[i][1], list[i][0]));
+  }
+  select_dialect.style.visibility = list[1].length == 1 ? 'hidden' : 'visible';
+}
+
+var create_email = false;
+var final_transcript = '';
+var recognizing = false;
+var ignore_onend;
+var start_timestamp;
+
+var speechtopic = new ROSLIB.Topic({
+  ros : ros,
+  name : '/red/speech_test',
+  messageType : 'std_msgs/String'
+});
+
+console.log("check for speech recognition capability");
+if (!('webkitSpeechRecognition' in window)) {
+  upgrade();
+} else {
+  start_button.style.display = 'inline-block';
+  var recognition = new webkitSpeechRecognition();
+  console.log("recognition:",recognition);
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onstart = function() {
+    console.log("speak now...");
+    recognizing = true;
+    showInfo('info_speak_now');
+    //start_img.src = '/intl/en/chrome/assets/common/images/content/mic-animate.gif';
+  };
+
+  recognition.onerror = function(event) {
+    console.log("Error",event);
+    if (event.error == 'no-speech') {
+      start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+      showInfo('info_no_speech');
+      ignore_onend = true;
+    }
+    if (event.error == 'audio-capture') {
+      start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+      showInfo('info_no_microphone');
+      ignore_onend = true;
+    }
+    if (event.error == 'not-allowed') {
+      if (event.timeStamp - start_timestamp < 100) {
+        showInfo('info_blocked');
+      } else {
+        showInfo('info_denied');
+      }
+      ignore_onend = true;
+    }
+  };
+
+  recognition.onend = function() {
+    recognizing = false;
+    if (ignore_onend) {
+      return;
+    }
+    start_img.src = '/intl/en/chrome/assets/common/images/content/mic.gif';
+    if (!final_transcript) {
+      showInfo('info_start');
+      return;
+    }
+    showInfo('');
+    if (window.getSelection) {
+      window.getSelection().removeAllRanges();
+      var range = document.createRange();
+      range.selectNode(document.getElementById('final_span'));
+      window.getSelection().addRange(range);
+    }
+    if (create_email) {
+      create_email = false;
+      createEmail();
+    }
+  };
+
+  recognition.onresult = function(event) {
+    var interim_transcript = '';
+    if (typeof(event.results) == 'undefined') {
+      recognition.onend = null;
+      recognition.stop();
+      upgrade();
+      return;
+    }
+    for (var i = event.resultIndex; i < event.results.length; ++i) {
+      if (event.results[i].isFinal) {
+        final_transcript += event.results[i][0].transcript;
+	console.log("Final:",final_transcript);
+	speechtopic.pub(final_transcript);
+      } else {
+        interim_transcript += event.results[i][0].transcript;
+      }
+    }
+    final_transcript = capitalize(final_transcript);
+    final_span.innerHTML = linebreak(final_transcript);
+    interim_span.innerHTML = linebreak(interim_transcript);
+    if (final_transcript || interim_transcript) {
+      showButtons('inline-block');
+    }
+  };
+}
+
+function upgrade() {
+  start_button.style.visibility = 'hidden';
+  showInfo('info_upgrade');
+}
+
+var two_line = /\n\n/g;
+var one_line = /\n/g;
+function linebreak(s) {
+  return s.replace(two_line, '<p></p>').replace(one_line, '<br>');
+}
+
+var first_char = /\S/;
+function capitalize(s) {
+  return s.replace(first_char, function(m) { return m.toUpperCase(); });
+}
+
+function startButton(event) {
+  if (recognizing) {
+    recognition.stop();
+    return;
+  }
+  final_transcript = '';
+  recognition.lang = select_dialect.value;
+  recognition.start();
+  ignore_onend = false;
+  final_span.innerHTML = '';
+  interim_span.innerHTML = '';
+  start_img.src = '/intl/en/chrome/assets/common/images/content/mic-slash.gif';
+  showInfo('info_allow');
+  showButtons('none');
+  start_timestamp = event.timeStamp;
+}
+
+function showInfo(s) {
+  if (s) {
+    for (var child = info.firstChild; child; child = child.nextSibling) {
+      if (child.style) {
+        child.style.display = child.id == s ? 'inline' : 'none';
+      }
+    }
+    info.style.visibility = 'visible';
+  } else {
+    info.style.visibility = 'hidden';
+  }
+}
+
+var current_style;
+function showButtons(style) {
+  if (style == current_style) {
+    return;
+  }
+  current_style = style;
+  copy_button.style.display = style;
+  email_button.style.display = style;
+  copy_info.style.display = 'none';
+  email_info.style.display = 'none';
+}
+
+console.log("start button...");
+document.getElementById ("start_button").addEventListener ("click", startButton, false);
+console.log("start button");
+</script>
+
+</html>

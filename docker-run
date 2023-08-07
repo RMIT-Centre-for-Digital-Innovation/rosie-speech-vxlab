@@ -1,0 +1,27 @@
+#!/bin/bash
+
+get_script_dir () {
+     SOURCE="${BASH_SOURCE[0]}"
+     # While $SOURCE is a symlink, resolve it
+     while [ -h "$SOURCE" ]; do
+          DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+          SOURCE="$( readlink "$SOURCE" )"
+          # If $SOURCE was a relative symlink (so no "/" as prefix, need to resolve it relative to the symlink base directory
+          [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+     done
+     SCRIPTDIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+     echo "script directory is $SCRIPTDIR"
+}
+# SCRIPTDIR=...
+get_script_dir
+#NAME=$1
+NAME=speechbutton
+
+$SCRIPTDIR/docker-build $NAME
+
+sudo docker rm -f $NAME
+
+# interactive
+#sudo docker run -ti --name vxcobotele -p 9010:9000 -p 9011:9001 -p 9012:9002 vxcobotele
+
+sudo docker run --restart=unless-stopped -d -w "/home/user" --name $NAME -p 9100:9000 -p 9101:9001 -v $SCRIPTDIR/speech.html:/home/user/index.html -v $SCRIPTDIR/keyboard.html:/home/user/keyboard.html $NAME

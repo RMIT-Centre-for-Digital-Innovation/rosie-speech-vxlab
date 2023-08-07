@@ -1,0 +1,3 @@
+cp ../blue/bluelib.js .
+cp ../blue/demo.pwd .
+sudo docker build -t speechbutton .

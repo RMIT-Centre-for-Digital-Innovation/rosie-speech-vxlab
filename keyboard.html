@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+
+<link rel="stylesheet" type="text/css" href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" />
+
+<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.8.0/jquery.min.js"></script>
+<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.23/jquery-ui.min.js"></script>
+
+<!-- script type="text/javascript" src="http://cdn.robotwebtools.org/EventEmitter2/current/eventemitter2.min.js"></script> -->
+
+<script type="text/javascript" src="eventemitter2.min.js"></script>
+
+<!-- type="text/javascript" src="http://cdn.robotwebtools.org/roslibjs/current/roslib.min.js"></script> -->
+
+<script type="text/javascript" src="roslib.min.js"></script>
+
+
+<script type="text/javascript" src="http://cdn.robotwebtools.org/keyboardteleopjs/current/keyboardteleop.min.js"></script>
+
+<script>
+/**
+ * @author Russell Toris - rctoris@wpi.edu
+ * @author Ian Peake - ian.peake@rmit.edu.au
+ */
+
+/**
+ * Manages connection to the server and all interactions with ROS.
+ *
+ * Emits the following events:
+ *   * 'change' - emitted with a change in speed occurs
+ *
+ * @constructor
+ * @param options - possible keys include:
+ *   * ros - the ROSLIB.Ros connection handle
+ *   * topic (optional) - the Twist topic to publish to, like '/cmd_vel'
+ *   * throttle (optional) - a constant throttle for the speed
+ */
+VX = {}
+
+VX.kbd = function(options) {
+  var that = this;
+  //locallog("that=",that);
+  options = options || {};
+  var ros = options.ros;
+  var topic = options.topic || '/cmd_vel';
+  // permanent throttle
+  var throttle = options.throttle || 1.0;
+
+  // used to externally throttle the speed (e.g., from a slider)
+  this.scale = 1.0;
+
+  // linear x and y movement and angular z movement
+  var x = 0;
+  var y = 0;
+  var z = 0;
+
+  var update_status_mode = function(message) {
+    var logmsg = 'mode: ' + JSON.stringify(message.mode) + " " + new Date().getTime();
+    //locallog('update_status_mode: '+logmsg);
+    var msg = "unknown/off";
+    if (message.mode === 0) { msg = "E-Stop"; }
+    if (message.mode === 1) { msg = "Disabled (Enable at remote control)"; }
+    if (message.mode === 4) { msg = "Limp home"; }
+    if (message.mode === 5) { msg = "Battery critical"; }
+    if (message.mode === 7) { msg = "Motor fault"; }
+    if (message.mode === 8) { msg = "Under wireless control"; }
+    if (message.mode === 16) { msg = "Timeout (Ready for software move)"; }
+    if (message.mode === 17) { msg = "Velocity (Moving)"; }
+    if (message.mode === 18) { msg = "Velocity raw"; }
+    document.getElementById("baseMode").innerHTML = msg + ", code = " + message.mode + ", timestamp " + new Date().getTime();
+  };
+
+  ros.onmessage = function(evt) {
+      console.log("Message:",evt);
+      var obj = JSON.parse(evt.data);
+      if (obj.msgtype==="rosmsg") {
+	  var topic = obj.data.topic;
+	  var msg = obj.data.msg;
+          //console.log("ROS msg:",topic,msg);
+          if (topic.name==="/mobility_base/mode") {
+              update_status_mode(msg);
+          }
+      }
+  };
+
+  var mode_l = {
+    name : '/mobility_base/mode',
+    messageType : 'mobility_base_core_msgs/Mode'
+  };
+  ros.send(JSON.stringify({msgtype: "subscribe", topic: mode_l}));
+
+  var cmdVel = {
+    name : topic,
+    messageType : 'geometry_msgs/Twist'
+  };
+
+  that.twist = {
+    angular : {
+      x : 0,
+      y : 0,
+      z : 0
+    },
+    linear : {
+      x : 0,
+      y : 0,
+      z : 0
+    }
+  };
+
+  var brakeFn = function() {
+          console.log('brake');
+	  that.pub = false;	
+	  that.twist = {
+	    angular : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    },
+	    linear : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    }
+	  };
+          //cmdVel.publish(that.twist);
+	  ros.send(JSON.stringify({msgtype: "publish", topic: cmdVel, msg: that.twist}));
+  }
+  this.brakeFn = brakeFn;
+
+  // every 10th of a second...
+  setInterval(function() {
+      var msg = that.twist;
+      if (that.pub) {
+        //cmdVel.publish(msg);
+	ros.send(JSON.stringify({msgtype: "publish", topic: cmdVel, msg: msg}));
+        if (that.brake) {
+          console.log("...and braking");
+	  msg = {
+	    angular : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    },
+	    linear : {
+	      x : 0,
+	      y : 0,
+	      z : 0
+	    }
+	  };
+          //cmdVel.publish(msg);
+	  ros.send(JSON.stringify({msgtype: "publish", topic: cmdVel, msg: msg}));
+	  that.pub = false;
+	  that.brake = false;
+	}
+      }
+  }, 200);
+
+  this.touchHandler = function(event, startend) {
+    console.log("touchHandler",that.touching,startend,event);
+    if (event.targetTouches.length == 1 && startend=='start') {
+      console.log("Single button", event.target.id);
+      var x = 0;
+      var y = 0;
+      var z = 0;
+      var oldX = x;
+      var oldY = y;
+      var oldZ = z;
+      validKey = true;
+      speed = throttle * that.scale;
+
+      switch (event.target.id) {
+	case 'buttona':
+	  // turn left
+	  z = 1 * speed;
+	  break;
+	case 'buttonw':
+	  // up
+	  x = 0.5 * speed;
+	  break;
+	case 'buttond':
+	  // turn right
+	  z = -1 * speed;
+	  break;
+	case 'buttons':
+	  // down
+	  x = -0.5 * speed;
+	  break;
+	case 'buttone':
+	  // strafe right
+	  y = -0.5 * speed;
+	  break;
+	case 'buttonq':
+	  // strafe left
+	  y = 0.5 * speed;
+	  break;
+	default:
+	  validKey = false;
+      }
+
+      if (validKey) {
+	// check which key was pressed
+	that.pub = true;
+	that.twist = {
+	  angular : {
+	    x : 0,
+	    y : 0,
+	    z : z
+	  },
+	  linear : {
+	    x : x,
+	    y : y,
+	    z : z
+	  }
+	};
+        console.log("Twist",that.twist);
+        // check for changes
+        if (oldX !== x || oldY !== y || oldZ !== z) {
+          that.emit('change', that.twist);
+        }
+      }
+
+    }
+  }
+
+  this.touchStart = function(event) {
+    console.log("touchStart");
+    if (event.target.id==="touchbuttons") { return; }
+    //if (that.touching===undefined) {
+    //  that.touching = {};
+    //}
+    //that.touching[event.target.id]='1';
+    that.touchHandler(event,'start');
+  }
+
+  this.touchEnd = function(event) {
+    console.log("touchEnd");
+    // for now, accept single-key only: "fail safe" --- any touch-end event will ``brake''
+    that.brakeFn();
+    //if (event.target.id==="touchbuttons") { return; }
+    //if (that.touching===undefined) {
+    //  that.touching = {};
+    //}
+    //that.touching[event.target.id]='0';
+    //that.touchHandler(event,'end');
+  }
+
+  // sets up a key listener on the page used for keyboard teleoperation
+  this.handleKey = function(keyCode, keyDown) {
+    //console.log("handleKey",keyCode,keyDown);
+    // used to check for changes in speed
+    var oldX = x;
+    var oldY = y;
+    var oldZ = z;
+    
+    var speed = 0;
+    var validKey = true;
+    // throttle the speed by the slider and throttle constant
+    if (keyDown === true) {
+      speed = throttle * that.scale;
+    } else {
+      console.log("Key up, stopping");
+      that.brake = true;
+    }
+    // check which key was pressed
+    switch (keyCode) {
+      case 65:
+      case 37:
+        // turn left
+        z = 1 * speed;
+        break;
+      case 87:
+      case 38:
+        // up
+        x = 0.5 * speed;
+        break;
+      case 68:
+      case 39:
+        // turn right
+        z = -1 * speed;
+        break;
+      case 83:
+      case 40:
+        // down
+        x = -0.5 * speed;
+        break;
+      case 69:
+        // strafe right
+        y = -0.5 * speed;
+        break;
+      case 81:
+        // strafe left
+        y = 0.5 * speed;
+        break;
+      default:
+        validKey = false;
+    }
+
+    // publish the command
+    if (validKey) {
+      that.pub = true;
+      that.twist = {
+        angular : {
+          x : 0,
+          y : 0,
+          z : z
+        },
+        linear : {
+          x : x,
+          y : y,
+          z : z
+        }
+      };
+      console.log("Twist",that.twist);
+
+      // check for changes
+      if (oldX !== x || oldY !== y || oldZ !== z) {
+        that.emit('change', that.twist);
+      }
+    }
+  };
+
+  // handle the key
+  var body = document.getElementsByTagName('body')[0];
+  body.addEventListener('keydown', function(e) {
+    that.handleKey(e.keyCode, true);
+  }, false);
+  body.addEventListener('keyup', function(e) {
+    that.handleKey(e.keyCode, false);
+  }, false);
+
+// Setup canvas and expose context via ctx variable
+// canvas.addEventListener('touchmove', function(event) {
+//  for (var i = 0; i < event.touches.length; i++) {
+//    var touch = event.touches[i];
+//    ctx.beginPath();
+//    ctx.arc(touch.pageX, touch.pageY, 20, 0, 2*Math.PI, true);
+//    ctx.fill();
+//    ctx.stroke();
+//  }
+//}, false)
+
+  //var touchbutton = document.getElementById('buttonq');
+  var touchbutton = document.getElementById('touchbuttons');
+  touchbutton.addEventListener('touchstart', that.touchStart);
+  touchbutton.addEventListener('touchend', that.touchEnd);
+  touchbutton.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+    }, false);
+};
+VX.kbd.prototype.__proto__ = EventEmitter2.prototype;
+</script>
+
+<script type="text/javascript">
+  /**
+   * Setup all GUI elements when the page is loaded.
+   */
+
+  function init() {
+    locallog('init');
+    var ros = new WebSocket("wss://h7.vx.rmit.edu.au:9001");
+    ROS = ros;
+    locallog('connecting...');
+
+    ros.onopen = function() {
+      locallog('Connected to websocket server.');
+
+      // Initialize the teleop.
+      var teleop = new VX.kbd({
+	ros : ros,
+	//topic : '/mobility_base/cmd_vel'
+	topic : '/safebase/cmd_vel'
+      });
+      // Create a UI slider using JQuery UI.
+      $('#speed-slider').slider({
+	range : 'min',
+	min : 0,
+	max : 100,
+	value : 90,
+	slide : function(event, ui) {
+	  // Change the speed label.
+	  $('#speed-label').html('Speed: ' + ui.value + '%');
+	  // Scale the speed.
+	  teleop.scale = (ui.value / 100.0);
+	}
+      });
+      // Set the initial speed .
+      $('#speed-label').html('Speed: ' + ($('#speed-slider').slider('value')) + '%');
+      teleop.scale = ($('#speed-slider').slider('value') / 100.0);
+
+    };
+
+    ros.onclose = function() {
+      locallog('Connection to websocket server closed.');
+    };
+
+    let updateTorsoStatus = function(status){
+      //locallog('Torso status', status);
+      var power = status.ready;
+      var statusStr = JSON.stringify(status);
+      if (power === null || power === undefined) {
+	statusStr = "<font color='red'>Check that Baxter torso is switched on</font>";
+      }
+      document.getElementById("torsoStatus").innerHTML = statusStr;
+    }
+
+    // every 10th of a second...
+    setInterval(function() {
+      // Try to get status of Torso (through web shim)
+      let url = 'http://10.42.1.254:9000/gandalf.status';
+      fetch(url)
+      .then(res => res.json())
+      .then((out) => {
+	updateTorsoStatus(out);
+      })
+      .catch(err => {
+	updateTorsoStatus({error: err});
+      });
+    }, 5000);
+
+  }
+
+</script>
+</head>
+
+<body onload="init()">
+  <title>VXLab Baxter controller</title>
+  <p><em><b>You must be an inducted Baxter user to use this page</b></em> --- refer to mobile Baxter safe work instruction as a condition of use
+  <p>Operator checklist:
+  <ul>
+  <li>disconnect charger
+  <li>warn people nearby - no loose clothing or jewellery
+  <li>maintain sight of robot and avoid collisions
+  <li>hold remote control at all times
+  <li>emergency stop on back left of Baxter torso.
+  </ul>
+
+  <b>Mobility base</b>
+
+  <p>Switch on the remote control. Set left stick to "enable". Set switch on top left to "computer". Ensure charging cord is not connected! Touch is under investigation.
+
+
+  <table>
+  <tr><td>Mode:</td><td><div id="baseMode"></div></td><td></td></tr>
+  </table>
+
+  <div id="touchbuttons">
+  <table width="100%">
+  <tr>
+  <td><img width="100%" id="buttonq" src="q.jpg"></td>
+  <td><img width="100%" id="buttonw" src="w.jpg"></td>
+  <td><img width="100%" id="buttone" src="e.jpg"></td>
+  </tr>
+  </div>
+  <tr>
+  <td><img width="100%" id="buttona" src="a.jpg"></td>
+  <td><img width="100%" id="buttons" src="s.jpg"></td>
+  <td><img width="100%" id="buttond" src="d.jpg"></td>
+  </tr>
+  </table>
+  </div>
+
+  <div id="speed-label"></div>
+  <div id="speed-slider"></div>
+
+  <p><b>Torso:</b>
+  <div id="torsoStatus"></div>
+  <table>
+  <tr>
+  <td><a href="http://10.42.1.254:9000/baxter.motors.on"><img alt="Enable" width="100%" src="BaxterPowerOn.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.motors.off"><img alt="Disable" width="100%" src="BaxterDisable.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/gandalf.record"><img alt="Record" width="100%" src="BaxterRecord.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/gandalf.play"><img alt="Play back" width="100%" src="BaxterPlayback.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.enable_untuck"><img alt="Enable" width="100%" src="BaxterPowerOn.png"></a></td>
+  <td><a href="http://10.42.1.254:9000/baxter.tuck_disable"><img alt="Disable" width="100%" src="BaxterDisable.png"></a></td>
+  </tr>
+  <tr>
+  <td>Motors on</td>
+  <td>Motors off</td>
+  <td>Record</td>
+  <td>Play</td>
+  <td>Untuck</td>
+  <td>Tuck</td>
+  </tr>
+  </table>
+
+      <div>
+        <textarea id="screenlog" cols="40" rows="10" padding-left="0"></textarea>
+      </div>
+<script>
+var screenlog_textarea = document.getElementById("screenlog");
+var locallog = function(text) {
+  console.log(text);
+  screenlog_textarea.value += text + "\n";
+  screenlog_textarea.scrollTop = screenlog_textarea.scrollHeight;
+}
+</script>
+
+</body>
+</html>
