@@ -14,6 +14,8 @@ mv cert.pem server.crt
 
 touch demo.pwd
 
+// download repo
+
 git clone https://github.com/RMIT-Centre-for-Digital-Innovation/rosie-speech-vxlab
 
 ./docker-build
